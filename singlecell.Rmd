@@ -1,0 +1,361 @@
+---
+title: "scRNA_ensembl"
+author: "chentao"
+date: "2019/5/20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+```{r, message=FALSE}
+library(magrittr)
+library(tidyr)
+library(Seurat)
+library(progress)
+library(dplyr)
+library(readr)
+library(stringr)
+```
+
+## loading data
+```{r}
+tumor_helth <-  "/home/taotao/scRNA/project/tumor_normal"
+data <- list.files(tumor_helth, full.names = TRUE)
+pb <- progress_bar$new(total = length(data),
+                       clear = FALSE, width = 60, 
+                       format = "progerss [:bar]:percent eta::eta")
+count <- lapply(data, function(x) {
+  pb$tick()
+  read.table(x, row.names = 1,
+             col.names = c('id', gsub(basename(x), pattern = "\\.txt", replacement = "")))
+}) 
+```
+
+```{r}
+count <- as.data.frame(count)
+save(count, file = "./tumor_health.RData")
+```
+
+
+## get gene_id and symbol name
+
+```{r}
+source("./function.R")
+gtf <- Getgene("./Homo_sapiens.GRCh37.75.gtf")
+```
+
+```{r}
+count <- as.data.frame(count)
+counts <- count[rownames(count) %in% gtf$allgene$ENSEMID,]
+counts <- aggregate(counts, by = list(id = gtf$allgene$GENENAMES[match(rownames(counts), gtf$allgene$ENSEMID)]), "mean")
+rownames(counts) <- counts$id
+counts <- dplyr::select(counts, -id)Testing$nx_gene <- Testing$gtf[Testing$gtf$X1 != "X",]$GENENAMES
+
+```
+
+
+## extract protein_coding gene in counts
+```{r}
+gtfs <- gtf$uniquegene[unlist(gtf$uniquegene$X2) == "protein_coding",]
+countss <- counts[rownames(counts) %in% unlist(gtfs$GENENAMES),]
+```
+
+
+## analysis data
+
+```{r}
+glioma <- CreateSeuratObject(counts = countss, project = "glioma", min.cells = 5, min.features = 200)
+```
+
+
+```{r, fig.align='center'}
+VlnPlot(glioma, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2)
+```
+
+
+
+```{r}
+# FeaturScatter is typically used to visulize feature-featur 
+plot1 <- FeatureScatter(glioma, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+CombinePlots(plots = list(plot1))
+```
+
+
+
+```{r}
+gliomas <- subset(glioma, subset = nFeature_RNA > 200 ) # gene number greater than 200
+plot1 <- FeatureScatter(gliomas, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1
+```
+
+
+
+```{r}
+gliomas <- NormalizeData(gliomas, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+
+
+```{r}
+gliomas <- FindVariableFeatures(gliomas, selection.method = "vst", nfeatures = 3000)
+top20 <- head(VariableFeatures(gliomas), 20)
+plot1 <- VariableFeaturePlot(gliomas)
+plot2 <- LabelPoints(plot = plot1, points = top20)
+CombinePlots(plots = list(plot1, plot2), ncol = 2, legend = "bottom")
+```
+
+
+```{r}
+all.genes <- rownames(gliomas)
+gliomas <- ScaleData(gliomas, features = all.genes)
+```
+
+
+```{r}
+gliomas <- RunPCA(gliomas, features = VariableFeatures(object = gliomas))
+```
+
+```{r}
+VizDimLoadings(gliomas, dims = 1:2, reduction = "pca")
+```
+
+
+```{r}
+DimPlot(gliomas, reduction = "pca")
+```
+
+```{r}
+DimHeatmap(gliomas, dims = 1, cells = ncol(gliomas), balanced = TRUE)
+```
+
+```{r}
+DimHeatmap(gliomas, dims = 1:15, cells = ncol(gliomas), balanced = TRUE)
+```
+
+```{r}
+gliomas <- JackStraw(gliomas, num.replicate = 100)
+gliomas <- ScoreJackStraw(gliomas, dims = 1:20)
+JackStrawPlot(gliomas, dim = 1:15)
+ElbowPlot(gliomas, ndims = 100)
+```
+
+
+```{r}
+gliomas <- FindNeighbors(gliomas, dims = 1:20)
+gliomas <- FindClusters(gliomas, resolution = 0.226)
+```
+
+```{r}
+head(Idents(gliomas), 5)
+```
+
+```{r}
+gliomas <- RunUMAP(gliomas, dims = 1:10)
+DimPlot(gliomas, reduction = "umap", label = TRUE)
+```
+
+```{r}
+gliomass <- RunTSNE(gliomas, dims = 1:10)
+TSNEPlot(gliomass, label = TRUE)
+```
+
+
+```{r}
+cluster1.markers <- FindMarkers(gliomass, ident.1 = 1, min.pct = 0.25)
+head(cluster1.markers)
+```
+
+```{r}
+cluster5.markers <- FindMarkers(gliomass, ident.1 = 5, ident.2 = c(1, 2), min.pct = 0.25)
+head(cluster5.markers, n = 5)
+```
+
+```{r}
+# find markers for every cluster compared to all remaining cells, report only the positive #ones
+gliomass.markers <- FindAllMarkers(gliomass, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+gliomass.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC) # top 10 gene in every cluster gene
+```
+
+
+
+```{r}
+top10 <- gliomass.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+DoHeatmap(gliomass, features = top10$gene, slot = "scale.data") + NoLegend()
+#DoHeatmap(gliomass, features = top10$gene, slot = "scale.data")
+```
+
+```{r}
+# astrocyte gene: Gfap, Aldh111, Slc1a3, Aqp4
+FeaturePlot(gliomass, features = "ALDH1L1")
+FeaturePlot(gliomass, features = "SLC1A3")
+FeaturePlot(gliomass, features = "AQP4")
+FeaturePlot(gliomass, features = "GDPD2")
+FeaturePlot(gliomass, features = "ETNPPL")
+```
+
+```{r}
+# neurons Tubb3, Stmn2, Snap25, Eno2, Syn1
+FeaturePlot(gliomass, features = "TUBB3")
+FeaturePlot(gliomass, features = "STMN2")
+FeaturePlot(gliomass, features = "SNAP25")
+FeaturePlot(gliomass, features = "ENO2")
+FeaturePlot(gliomass, features = "SYN1")
+```
+
+```{r}
+# OPCs Pdgfra, Cspg4
+FeaturePlot(gliomass, features = "PDGFRA")
+FeaturePlot(gliomass, features = "CSPG4")
+FeaturePlot(gliomass, features = "SOX10")
+```
+
+```{r}
+# NFO Enpp6, Nfasc
+FeaturePlot(gliomass, features = "ENPP6")
+FeaturePlot(gliomass, features = "NFASC")
+```
+
+```{r}
+#MO Plp, Mog, Mbp, Mobp
+FeaturePlot(gliomass, features = "MOG")
+FeaturePlot(gliomass, features = "MBP")
+FeaturePlot(gliomass, features = "MOBP")
+```
+
+```{r}
+#microglia Ccl3, Cd11b, Tnf
+FeaturePlot(gliomass, features = "CCL3")
+FeaturePlot(gliomass, features = "TNF")
+FeaturePlot(gliomass, features = "CD68")
+FeaturePlot(gliomass, features = "CD74")
+```
+
+```{r}
+#endothelial cells Cldn5, Flt1
+FeaturePlot(gliomass, features = "ESAM")
+FeaturePlot(gliomass, features = "DCN")
+```
+
+
+```{r}
+FeaturePlot(gliomass, features = "ETNPPL")
+```
+```{r}
+## microglial cell activation
+FeaturePlot(gliomass, features = "C1QA")
+```
+
+```{r}
+# fen mi dan bai
+FeaturePlot(gliomass, features = "CLU")
+```
+
+```{r}
+FeaturePlot(gliomass, features = "TYROBP")
+```
+
+```{r}
+FeaturePlot(gliomass, features = "AIF1")
+```
+
+
+```{r}
+FeaturePlot(gliomass, features = "ENSG00000146648")
+```
+```{r}
+FeaturePlot(gliomass, features = "ENSG00000100146")
+```
+
+
+```{r}
+FeaturePlot(gliomass, features = "ENSG00000129226")
+```
+```{r}
+FeaturePlot(gliomass, features = "ENSG00000019582")
+```
+```{r}
+FeaturePlot(gliomass, features = "ENSG00000204655")
+```
+```{r}
+FeaturePlot(gliomass, features = "ENSG00000011465")
+```
+```{r}
+FeaturePlot(gliomass, features = "ENSG00000164089")
+```
+```{r}
+FeaturePlot(gliomass, features = "ENSG00000100146")
+```
+```{r}
+FeaturePlot(gliomass, features = "ENSG00000104435")
+```
+```{r}
+FeaturePlot(gliomass, features = "ENSG00000171885")
+```
+```{r}
+FeaturePlot(gliomass, features = "ENSG00000106278")
+```
+```{r}
+#save(gene, file = "../scRNA_gene_expr.RData")
+```
+
+
+```{r}
+# 巨噬细胞M2 CD163 高表达， 要与CMAF 2013 Jaguin
+names <- c("ENSG00000169313", "ENSG00000168329", "ENSG00000067798", "ENSG00000105366", "ENSG00000079215",
+           "ENSG00000120708", "ENSG00000185201", "ENSG00000187474", "ENSG00000163191", "ENSG00000115919",
+           "ENSG00000115232",
+           "ENSG00000184557",
+           "ENSG00000177575", "ENSG00000178573",
+           "ENSG00000136997",
+           "ENSG00000169896")
+```
+```{r}
+DoHeatmap(gliomass, features = names, cells = WhichCells(gliomass, idents = c(0, 1, 3)))
+```
+### get t-sne coordinates
+```{r}
+locations <- gliomass[["tsne"]]@cell.embeddings %>% as.data.frame()
+locations$class <- Idents(gliomass)[rownames(locations)]
+```
+
+### get annnotation data
+```{r}
+annotations <- read.csv("/home/taotao/scRNA/project/tumor_health.CSV", header = TRUE, row.names = 1)
+```
+
+```{r}
+locations$tissue <- annotations[rownames(locations),]$tissue
+locations$patients <- annotations[rownames(locations),]$patient_id
+locations$type <- annotations[rownames(locations),]$cell_type
+```
+
+```{r}
+locations %>% 
+  filter(class %in% c(0, 1, 3)) %>% 
+  ggplot(aes(tSNE_1, tSNE_2)) +
+  geom_point(aes(colour = tissue, shape = patients)) + theme_classic()
+```
+```{r}
+locations %>% 
+  filter(class %in% c(0, 1, 3)) %>% 
+  ggplot(aes(tSNE_1, tSNE_2)) +
+  geom_point(aes(colour = class, shape = patients)) + theme_classic()
+```
+
+
+
+
+```{r}
+locations %>% 
+  filter(class %in% c(2, 5, 6, 7)) %>%
+  ggplot(aes(tSNE_1, tSNE_2)) + 
+  geom_point(aes(colour = class, shape = patients)) + theme_classic()
+```
+```{r}
+locations %>% 
+  filter(class %in% c(2, 5, 6,7)) %>%
+  ggplot(aes(tSNE_1, tSNE_2)) + 
+  geom_point(aes(colour = tissue, shape = patients)) + theme_classic()
+```
