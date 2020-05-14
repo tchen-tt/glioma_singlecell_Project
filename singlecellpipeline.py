@@ -8,7 +8,7 @@ import os
 import re
 import argparse
 
-parse = argparse.ArgumentParser(description="Sing cell sequencing project.",
+parse = argparse.ArgumentParser(description="Single cell sequencing project.",
                                 epilog="Created on 2019-07-08.")
 parse.add_argument('--level', '-l', choices=['expression', 'variant'],
                    required=True, help='choice your pipline with variant or expression')
